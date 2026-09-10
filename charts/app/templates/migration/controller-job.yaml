@@ -1,49 +1,50 @@
+{{- if .Values.multiTenantMigration.enabled }}
+{{- $mt := .Values.multiTenantMigration }}
+{{- $name := printf "%s-migration" (include "app.names.name" .) }}
+{{- $sa := default $name $mt.controller.serviceAccountName }}
 {{- $runId := (.Values.image.tag | toString | replace "." "-" | replace "+" "-" | lower) | default (printf "r%d" (.Release.Revision | int)) -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "db-migrator.fullname" . }}-controller
+  name: {{ printf "%s-controller" $name | quote }}
   namespace: {{ .Release.Namespace | quote }}
   labels:
-    app.kubernetes.io/name: {{ include "db-migrator.fullname" . }}
+    app.kubernetes.io/name: {{ include "app.names.name" . | quote }}
     app.kubernetes.io/component: migration-controller
-  {{- if .Values.hook.enabled }}
   annotations:
-    # Runs before the app Sync; sync-wave 0 is after the rbac/configmap (wave -1).
+    # Runs before the app Sync; wave 0 is after the rbac/configmap (wave -1).
     argocd.argoproj.io/hook: PreSync
     argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
     argocd.argoproj.io/sync-wave: "0"
-  {{- end }}
 spec:
   backoffLimit: 0
-  activeDeadlineSeconds: {{ .Values.controller.activeDeadlineSeconds | default 3600 }}
-  ttlSecondsAfterFinished: {{ .Values.controller.ttlSecondsAfterFinished | default 600 }}
+  activeDeadlineSeconds: {{ $mt.controller.activeDeadlineSeconds | default 3600 }}
+  ttlSecondsAfterFinished: {{ $mt.controller.ttlSecondsAfterFinished | default 600 }}
   template:
     metadata:
       labels:
         app.kubernetes.io/component: migration-controller
-        # The controller only orchestrates (kubectl/curl); no mesh needed, and a
-        # sidecar would keep the Job pod from completing.
+        # A sidecar would keep this short Job from completing.
         linkerd.io/inject: disabled
     spec:
-      serviceAccountName: {{ .Values.controller.serviceAccountName | quote }}
+      serviceAccountName: {{ $sa | quote }}
       restartPolicy: Never
       volumes:
         - name: scripts
           configMap:
-            name: {{ include "db-migrator.fullname" . }}-scripts
+            name: {{ printf "%s-migration-scripts" (include "app.names.name" .) | quote }}
             defaultMode: 0755
       containers:
         - name: controller
-          image: {{ .Values.controller.image | quote }}
+          image: {{ $mt.controller.image | quote }}
           command: ["bash", "/scripts/migrate.sh"]
           env:
             - name: HAM_BASE_URL
-              value: {{ .Values.ham.baseUrl | quote }}
+              value: {{ $mt.ham.baseUrl | quote }}
             - name: HAM_PAGE_SIZE
-              value: {{ .Values.ham.pageSize | quote }}
+              value: {{ $mt.ham.pageSize | quote }}
             - name: HAM_STATUS_INCLUDE
-              value: {{ .Values.ham.statusInclude | quote }}
+              value: {{ $mt.ham.statusInclude | quote }}
             - name: NAMESPACE
               valueFrom:
                 fieldRef:
@@ -53,11 +54,12 @@ spec:
             - name: RUN_ID
               value: {{ $runId | quote }}
             - name: BATCH_SIZE
-              value: {{ .Values.batchSize | quote }}
+              value: {{ $mt.batchSize | quote }}
             - name: FAIL_THRESHOLD_PCT
-              value: {{ .Values.failThresholdPct | quote }}
+              value: {{ $mt.failThresholdPct | quote }}
             - name: JOB_TIMEOUT
-              value: {{ .Values.jobTimeoutSeconds | quote }}
+              value: {{ $mt.jobTimeoutSeconds | quote }}
           volumeMounts:
             - name: scripts
               mountPath: /scripts
+{{- end }}

@@ -1,9 +1,11 @@
-{{- if .Values.rbac.create }}
-# The controller creates/watches/deletes the per-tenant child Jobs and reads their logs.
+{{- if .Values.multiTenantMigration.enabled }}
+{{- $name := printf "%s-migration" (include "app.names.name" .) }}
+{{- $sa := default $name .Values.multiTenantMigration.controller.serviceAccountName }}
+# The migration controller creates/watches/deletes the per-tenant child Jobs and reads logs.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{ .Values.controller.serviceAccountName | quote }}
+  name: {{ $sa | quote }}
   namespace: {{ .Release.Namespace | quote }}
   annotations:
     argocd.argoproj.io/hook: PreSync
@@ -12,7 +14,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+  name: {{ $name | quote }}
   namespace: {{ .Release.Namespace | quote }}
   annotations:
     argocd.argoproj.io/hook: PreSync
@@ -31,7 +33,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+  name: {{ $name | quote }}
   namespace: {{ .Release.Namespace | quote }}
   annotations:
     argocd.argoproj.io/hook: PreSync
@@ -39,9 +41,9 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+  name: {{ $name | quote }}
 subjects:
   - kind: ServiceAccount
-    name: {{ .Values.controller.serviceAccountName | quote }}
+    name: {{ $sa | quote }}
     namespace: {{ .Release.Namespace | quote }}
 {{- end }}

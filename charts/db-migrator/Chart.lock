@@ -1,6 +1,0 @@
-dependencies:
-- name: liquibase
-  repository: file://../liquibase
-  version: 0.1.0
-digest: sha256:d0a3a1053c9d8de0a42b1055d861ec828467680b67eec05a682aa86982195854
-generated: "2026-09-10T10:02:08.044271+02:00"
