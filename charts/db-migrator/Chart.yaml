@@ -1,0 +1,21 @@
+apiVersion: v2
+name: db-migrator
+description: >-
+  Runs Liquibase migrations PER TENANT for the multi-tenant single-pod model
+  (e.g. `time`). Renders one migration Job per tenant, as an ArgoCD PreSync hook so
+  migrations run before the app is rolled out. Reuses the shared `liquibase` library
+  container (Vault mode: per-tenant creds resolved at runtime by vault-env).
+keywords:
+  - liquibase
+  - migration
+  - multi-tenant
+home: https://www.w6d.io
+maintainers:
+  - name: Wildcard
+    email: support@w6d.io
+dependencies:
+  - name: liquibase
+    version: ">=0.1.0"
+    repository: "file://../liquibase"
+appVersion: "0.1.0"
+version: 0.1.0

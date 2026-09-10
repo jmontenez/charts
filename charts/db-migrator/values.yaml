@@ -1,0 +1,59 @@
+# db-migrator — per-tenant Liquibase migration Jobs.
+
+# Liquibase `-db` image (same ref logic as app: <registry>/<repository>-db:<tag>).
+image:
+  registry: ""
+  repository: "" # e.g. strada/applications/backend/swc/time
+  tag: ""        # BUILD_VERSION
+imagePullPolicy: ""
+# dbversion/version feed the db_version env (informational).
+dbversion: ""
+version: ""
+
+# Liquibase container knobs, forwarded to the library container.
+liquibase:
+  args: []
+  resources: {}
+
+# List of tenant namespaces to migrate. Populated from the source of truth — ham
+# api/v1/tenants — at render time (e.g. injected by the ArgoCD ApplicationSet generator,
+# or written to a values file by a small CI step). One Job is rendered per entry.
+tenants: []
+# - business
+# - essential
+# - premium
+
+# DB target. host/port may be plain values OR vault-env refs (resolved in-container).
+database:
+  host: "vault:strada/data/common/postgres#url"
+  port: 5432
+  dbSuffix: "time"          # DB name per tenant = "<tenant>.<dbSuffix>"
+
+# Vault (banzaicloud vault-env) — per-tenant DDL creds.
+vault:
+  role: "time"              # k8s auth role; must be allowed to read the creds below
+  addr: "http://vault.vault:8200"
+  skipVerify: true
+  dbMount: "strada-db"      # engine mount
+  roleSuffix: "time-db"     # static-role per tenant = "<tenant>-<roleSuffix>" (owner/DDL)
+
+serviceAccount:
+  name: "time"              # SA bound to the vault role
+
+# Batching: tenants are grouped into ArgoCD sync-waves of this size. Waves run
+# sequentially, so at most `batchSize` migration Jobs run concurrently — protects
+# the shared Postgres and Vault when there are ~1150 tenants.
+batchSize: 25
+
+job:
+  backoffLimit: 1
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 600
+
+# Failure semantics (see README):
+#   fail-closed (default) — a failed tenant Job fails its PreSync hook and blocks the
+#                           rollout. Safest when new code needs the new schema.
+#   isolate               — wrap liquibase so a single tenant failure does not fail the
+#                           hook (records the failure, rollout proceeds). Needs a threshold
+#                           gate elsewhere; closer to the CI-step behaviour.
+failurePolicy: fail-closed
