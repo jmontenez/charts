@@ -1,0 +1,47 @@
+{{- if .Values.rbac.create }}
+# The controller creates/watches/deletes the per-tenant child Jobs and reads their logs.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.controller.serviceAccountName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-1"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-1"
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+  namespace: {{ .Release.Namespace | quote }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/sync-wave: "-1"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ printf "%s-controller" .Values.controller.serviceAccountName | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.controller.serviceAccountName | quote }}
+    namespace: {{ .Release.Namespace | quote }}
+{{- end }}

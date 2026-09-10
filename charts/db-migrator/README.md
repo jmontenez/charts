@@ -7,67 +7,52 @@ plus the `liquibase` **library chart** that makes the migration container reusab
 
 `time` moved from *one pod per tenant* to *one pod for all tenants*, but each tenant keeps
 its own Postgres DB (`<tenant>.time`), so the schema must still be migrated once per DB.
-The `app` chart migrates via a single fail-closed **initContainer** (one DB per pod) — a
-perfect fit for the old per-tenant model, unusable for one pod serving N DBs.
+The `app` chart migrates via a single fail-closed **initContainer** (one DB per pod) —
+perfect for the old per-tenant model, unusable for one pod serving N DBs.
 
-Three options were considered:
+Chosen packaging: **extract the Liquibase container into a library chart** and reuse it two
+ways (over a `time-backend`-derived chart, or bloating `app`):
 
-| Option | Verdict |
-|---|---|
-| A dedicated `time-backend` chart deriving from `app` | ❌ per-app chart proliferation; the migration logic isn't reusable; `.package_application` already repackages `app`+values per project |
-| Put the multi-tenant logic **inside `app`** | ➖ bloats the shared chart; every consumer carries it |
-| **Extract liquibase into a library chart, reuse it two ways** | ✅ chosen — one source of truth |
+- **`charts/liquibase`** (library) exposes `liquibase.container` — creds source is a param
+  (`secret` = today's k8s-secret admin creds; `vault` = per-tenant creds via vault-env).
+- **`app`** renders its initContainer via `include "liquibase.container"` (`creds: secret`).
+  **Behaviour unchanged** for single/per-tenant apps.
+- **`charts/db-migrator`** provides the multi-tenant migrator (this chart).
 
-## What's here
+## Controller mode (b)
 
-- **`charts/liquibase`** — a Helm **library chart** exposing `liquibase.container`
-  (image helpers + the `liquibase update` container). Credential source is a parameter:
-  - `creds: secret` — admin creds from the dlm-provisioned k8s secret (today's behaviour);
-  - `creds: vault` — per-tenant creds resolved at runtime by vault-env.
-- **`app`** now renders its initContainer by `include`-ing `liquibase.container`
-  (`creds: secret`). **Behaviour unchanged** for existing single-tenant / per-tenant apps.
-- **`charts/db-migrator`** — renders **one migration Job per tenant** (`creds: vault`,
-  DDL role `<tenant>-time-db`, DB `<tenant>.time`), as an **ArgoCD PreSync hook** so
-  migrations run *before* the app is rolled out. Batching = ArgoCD **sync-waves** of
-  `batchSize` (waves run sequentially → at most `batchSize` Jobs at once; protects
-  Postgres/Vault at ~1150 tenants).
+One **controller Job**, rendered as an **ArgoCD PreSync hook** (runs before the app Sync):
 
-## How `time` consumes it
+1. discovers tenants from ham `api/v1/tenants` (in-cluster, internal port 8083, no auth),
+   at runtime — so there is **no tenant list in values**;
+2. fans out one child migration Job per tenant, rendered from the shared
+   `liquibase.container` (Vault mode: DDL role `<tenant>-time-db`, DB `<tenant>.time`);
+3. by **batch** (`batchSize` concurrent child Jobs) — required at ~1150 tenants;
+4. **isolates** per-tenant failures and exits non-zero only if the failure rate exceeds
+   `failThresholdPct` (which blocks the Sync). This gives the CI-step's non-blocking +
+   threshold semantics, but GitOps-native (ordering guaranteed by PreSync).
 
-`db-migrator` is deployed as an ArgoCD Application (or an extra resource of the `time`
-appset) alongside the `time` app. `.Values.tenants` is the tenant list from the source of
-truth, **ham `api/v1/tenants`** — injected at render time by the appset generator or a
-small values-writer step. On each sync, ArgoCD runs the PreSync migration Jobs (wave by
-wave) before syncing the `time` Deployment.
+The controller script lives in `files/migrate.sh` (mounted via a ConfigMap); the child Job
+template is helm-rendered from the library into the same ConfigMap (`${TENANT}`/`${RUN_ID}`
+substituted at runtime). RBAC (SA + Role) to manage the child Jobs is in `templates/rbac.yaml`.
 
 ```
 helm template charts/db-migrator \
   --set image.registry=<ecr> --set image.repository=strada/applications/backend/swc/time \
-  --set image.tag=<BUILD_VERSION> --set 'tenants={business,essential,premium}' --set batchSize=25
+  --set image.tag=<BUILD_VERSION> --namespace strada-back
 ```
 
-## Failure semantics (`failurePolicy`) — open decision
+## How `time` consumes it
 
-PreSync hooks are **fail-closed** by nature: a failed tenant Job fails the hook and blocks
-the rollout. That is *safer* when new code needs the new schema, but differs from the
-CI-step requirement ("don't block the pipeline on one tenant; gate on a failure threshold").
-Two ways to reconcile, to decide before productionising:
-- `fail-closed` (default): a failed migration blocks the sync. Simplest, safest.
-- `isolate`: wrap liquibase so a single tenant failure doesn't fail the hook (record it,
-  proceed), with a separate threshold gate. Closer to the CI step — **not yet implemented**
-  in this prototype.
+Deployed alongside the `time` app so its PreSync hook runs before each rollout. `image.*`
+points at the app's `-db` (liquibase) image. The Vault role `time` (SA `time`) must be
+allowed to read every tenant's `strada-db/static-creds/<tenant>-time-db` (done in dev;
+replay on qualif/prod).
 
-## vs. the CI step (`time` !1536)
+## Prototype notes
 
-Same migration command and Vault role (`time`), same per-tenant creds. The difference is
-*where the fan-out lives*: CI job launching k8s Jobs (visible JUnit, but not sequenced with
-ArgoCD) vs. chart-rendered PreSync Jobs (GitOps-native ordering, reusable, versioned). This
-prototype is the chart path (option B).
-
-## Prototype notes / not-yet-done
-
-- `liquibase` dependency uses `repository: file://../liquibase`; for release, publish it to
-  charts.w6d.io and switch the repo URL (in both `app` and `db-migrator`).
-- `failurePolicy: isolate` not wired yet.
-- `serviceAccount.name: time` and the Vault role `time` must be allowed to read every
-  tenant's `strada-db/static-creds/<tenant>-time-db` (done in dev; replay on qualif/prod).
+- `liquibase` dependency uses `repository: file://../liquibase`; publish to charts.w6d.io
+  and switch the URL before release (in both `app` and `db-migrator`).
+- Controller image needs `kubectl`+`curl`+`jq`+`envsubst` (the script installs the last
+  three if missing on `w6dio/kubectl`).
+- Two SAs: `db-migrator` (controller, manages Jobs) and `time` (child Jobs, Vault creds).
